@@ -37,6 +37,12 @@ class Node:
 		self.edges = []
 		self.id = id
 		self.type = type
+		self.pod = None
+		self.index = None
+		self.ip = None
+
+	def __repr__(self):
+		return f"Node({self.id}, type={self.type}, pod={self.pod}, idx={self.index})"
 
 	# Add an edge connected to another node
 	def add_edge(self, node):
@@ -67,5 +73,68 @@ class Fattree:
 		self.generate(num_ports)
 
 	def generate(self, num_ports):
+		"""
+		* core  : (k/2)² switches
+		* pods  : k
+			k/2 edge + k/2 aggregation per pod
+			k/2 hosts per edge switch
+		"""
+		k = num_ports
+		self.edges = []
 
-		# TODO: code for generating the fat-tree topology
+		def _link(n1, n2):
+			e = n1.add_edge(n2)
+			self.edges.append(e)
+
+		self.switches, self.servers = [], []
+		switch_id, host_id = 1, 1
+
+		# core
+		groups = rows = k // 2
+		core = [[None] * groups for _ in range(rows)]
+		for r in range(rows):
+			for g in range(groups):
+				n = Node(f's{switch_id}', 'core')
+				switch_id += 1
+				self.switches.append(n)
+				core[r][g] = n
+
+		# pods
+		for p in range(k):
+			edges, aggs = [], []
+
+			# edge switches
+			for e in range(k // 2):
+				n = Node(f's{switch_id}', 'edge')
+				n.pod, n.index = p, e
+				switch_id += 1
+				self.switches.append(n)
+				edges.append(n)
+
+			# aggregation switches
+			for a in range(k // 2):
+				n = Node(f's{switch_id}', 'agg')
+				n.pod, n.index = p, a
+				switch_id += 1
+				self.switches.append(n)
+				aggs.append(n)
+
+			# edge-agg links
+			for e in edges:
+				for a in aggs:
+					_link(e, a)
+
+			# hosts on every edge switch
+			for e in edges:
+				for h in range(k // 2):
+					host = Node(f'h{host_id}', 'server')
+					host.ip = f"10.{p}.{e.index}.{h+1}"
+					host_id += 1
+					self.servers.append(host)
+					_link(host, e)
+
+			# agg-core links: each agg row connects to every core group
+			for a in aggs:
+				row = a.index
+				for g in range(groups):
+					_link(a, core[row][g])
