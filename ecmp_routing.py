@@ -29,21 +29,22 @@ from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet
 from ryu.lib.packet import arp
-from ryu.lib.packet import ethernet 
+from ryu.lib.packet import ethernet
 from ryu.topology import event
 from ryu.topology.api import get_switch, get_link
 import topo
-class FTRouter(app_manager.RyuApp):
+class ECMPRouter(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
     def __init__(self, *args, **kwargs):
-        super(FTRouter, self).__init__(*args, **kwargs)
+        super(ECMPRouter, self).__init__(*args, **kwargs)
         self.topo_net = topo.Fattree(4)
         self.topo_net.k = 4
         self.host_ports  = defaultdict(set)   
         self.edge_hosts  = defaultdict(set)   
-        self.datapaths = {}    
-        self.node_by_dpid = {}     
-        self.portmap      = {}     
+        self.datapaths   = {}    
+        self.node_by_dpid = {}   
+        self.portmap      = {}   
+        self.group_id_counter = {}  
     @set_ev_cls(event.EventSwitchEnter)
     def get_topology_data(self, ev):
         switches = get_switch(self, None)
@@ -57,14 +58,13 @@ class FTRouter(app_manager.RyuApp):
         self.node_by_dpid = {}
         for n in self.topo_net.switches:
             self.node_by_dpid[int(n.id[1:])] = n
-        self.portmap = {}            
+        self.portmap = {}
         for lnk in links:
             self.portmap[(lnk.src.dpid, lnk.dst.dpid)] = lnk.src.port_no
             self.portmap[(lnk.dst.dpid, lnk.src.dpid)] = lnk.dst.port_no
         for sw in switches:
             self._install_rules(sw.dp)
-        self.logger.info("Static fat-tree rules pushed (%d switches)",
-                         len(switches))
+        self.logger.info("ECMP rules pushed (%d switches)", len(switches))
     def _safe_port(self, this_node, dst_node, dp):
         try:
             return self.portmap[(dp.id, int(dst_node.id[1:]))]
@@ -74,8 +74,31 @@ class FTRouter(app_manager.RyuApp):
                 if nbr == dst_node:
                     return this_node.edges.index(e) + 1
             raise
+    def _next_group_id(self, dpid):
+        if dpid not in self.group_id_counter:
+            self.group_id_counter[dpid] = 1
+        gid = self.group_id_counter[dpid]
+        self.group_id_counter[dpid] += 1
+        return gid
+    def _install_ecmp_group(self, dp, group_id, out_ports):
+        parser = dp.ofproto_parser
+        ofp = dp.ofproto
+        buckets = []
+        for port in out_ports:
+            actions = [parser.OFPActionOutput(port)]
+            bucket = parser.OFPBucket(
+                weight=50,
+                watch_port=ofp.OFPP_ANY,
+                watch_group=ofp.OFPG_ANY,
+                actions=actions)
+            buckets.append(bucket)
+        req = parser.OFPGroupMod(
+            dp, ofp.OFPGC_ADD, ofp.OFPGT_SELECT, group_id, buckets)
+        dp.send_msg(req)
+        self.logger.info("  ECMP group %d on s%d with ports %s",
+                         group_id, dp.id, out_ports)
     def _install_rules(self, dp):
-        self.logger.info("Pushing two-level rules on s%d", dp.id)
+        self.logger.info("Pushing ECMP rules on s%d", dp.id)
         parser, ofp = dp.ofproto_parser, dp.ofproto
         node = self.node_by_dpid.get(dp.id)
         k = self.topo_net.k
@@ -91,27 +114,20 @@ class FTRouter(app_manager.RyuApp):
                 match = parser.OFPMatch(eth_type=0x0800,
                                         ipv4_dst=(host.ip, '255.255.255.255'))
                 self.add_flow(dp, 20, match,
-                            [parser.OFPActionOutput(port)])
-                self.logger.info("  Edge s%d: /32 %s -> port %d",
-                                 dp.id, host.ip, port)
+                              [parser.OFPActionOutput(port)])
             agg_uplinks = []
             for e in node.edges:
                 nbr = e.rnode if e.lnode == node else e.lnode
                 if nbr.type == 'agg':
                     port = self._safe_port(node, nbr, dp)
                     agg_uplinks.append(port)
-            if agg_uplinks:
-                num_uplinks = len(agg_uplinks)
-                for suffix in range(k // 2):
-                    uplink_idx = suffix % num_uplinks
-                    out_port = agg_uplinks[uplink_idx]
-                    match = parser.OFPMatch(
-                        eth_type=0x0800,
-                        ipv4_dst=(f"0.0.0.{suffix + 1}", "0.0.0.255"))
-                    self.add_flow(dp, 5, match,
-                                [parser.OFPActionOutput(out_port)])
-                    self.logger.info("  Edge s%d: suffix .%d -> port %d (agg uplink)",
-                                     dp.id, suffix + 1, out_port)
+            if len(agg_uplinks) > 1:
+                gid = self._next_group_id(dp.id)
+                self._install_ecmp_group(dp, gid, agg_uplinks)
+                match = parser.OFPMatch(eth_type=0x0800)
+                actions = [parser.OFPActionGroup(gid)]
+                self.add_flow(dp, 1, match, actions)
+            elif agg_uplinks:
                 self.add_flow(dp, 1,
                               parser.OFPMatch(eth_type=0x0800),
                               [parser.OFPActionOutput(agg_uplinks[0])])
@@ -127,26 +143,19 @@ class FTRouter(app_manager.RyuApp):
                 match = parser.OFPMatch(eth_type=0x0800,
                                         ipv4_dst=(subnet, mask))
                 self.add_flow(dp, 20, match, [parser.OFPActionOutput(port)])
-                self.logger.info("  Agg s%d: /24 %s -> port %d (edge downlink)",
-                                 dp.id, subnet, port)
             core_uplinks = []
             for e in node.edges:
                 nbr = e.rnode if e.lnode == node else e.lnode
                 if nbr.type == 'core':
                     port = self._safe_port(node, nbr, dp)
                     core_uplinks.append(port)
-            if core_uplinks:
-                num_uplinks = len(core_uplinks)
-                for suffix in range(k // 2):
-                    uplink_idx = suffix % num_uplinks
-                    out_port = core_uplinks[uplink_idx]
-                    match = parser.OFPMatch(
-                        eth_type=0x0800,
-                        ipv4_dst=(f"0.0.0.{suffix + 1}", "0.0.0.255"))
-                    self.add_flow(dp, 5, match,
-                                [parser.OFPActionOutput(out_port)])
-                    self.logger.info("  Agg s%d: suffix .%d -> port %d (core uplink)",
-                                     dp.id, suffix + 1, out_port)
+            if len(core_uplinks) > 1:
+                gid = self._next_group_id(dp.id)
+                self._install_ecmp_group(dp, gid, core_uplinks)
+                match = parser.OFPMatch(eth_type=0x0800)
+                actions = [parser.OFPActionGroup(gid)]
+                self.add_flow(dp, 1, match, actions)
+            elif core_uplinks:
                 self.add_flow(dp, 1,
                               parser.OFPMatch(eth_type=0x0800),
                               [parser.OFPActionOutput(core_uplinks[0])])
@@ -157,7 +166,7 @@ class FTRouter(app_manager.RyuApp):
                 port = next((self._safe_port(node,
                                (e.rnode if e.lnode == node else e.lnode), dp)
                                for e in node.edges
-                               if (e.rnode if e.lnode == node else e.lnode).type=='agg'
+                               if (e.rnode if e.lnode == node else e.lnode).type == 'agg'
                                and (e.rnode if e.lnode == node else e.lnode).pod == pod),
                               None)
                 if port:
@@ -165,15 +174,13 @@ class FTRouter(app_manager.RyuApp):
                                             ipv4_dst=(subnet, mask))
                     self.add_flow(dp, 10, match,
                                   [parser.OFPActionOutput(port)])
-                    self.logger.info("  Core s%d: /16 10.%d.0.0 -> port %d",
-                                     dp.id, pod, port)
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         dpid = datapath.id
-        self.datapaths[dpid] = datapath 
+        self.datapaths[dpid] = datapath
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
@@ -198,7 +205,7 @@ class FTRouter(app_manager.RyuApp):
         arp_pkt = pkt.get_protocol(arp.arp)
         if arp_pkt:
             dst_ip = arp_pkt.dst_ip
-            self.logger.info("ARP-flood dst=%s (switch s%d)", dst_ip, dpid)
+            self.logger.info("ECMP ARP-flood dst=%s (switch s%d)", dst_ip, dpid)
             datapath.send_msg(
                 parser.OFPPacketOut(datapath=datapath, in_port=in_port,
                                     buffer_id=ofproto.OFP_NO_BUFFER,
@@ -209,7 +216,7 @@ class FTRouter(app_manager.RyuApp):
                                          arp_tpa=dst_ip)
             fm = parser.OFPFlowMod(datapath=datapath, priority=4,
                                    idle_timeout=5, match=drop_match,
-                                   instructions=[])          
+                                   instructions=[])
             datapath.send_msg(fm)
             return
         return

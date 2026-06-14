@@ -21,4 +21,9 @@
 
 # This script is used to run the fat-tree topology simulation using Mininet.
 export PYTHONPATH="$PYTHONPATH:$HOME/mininet"
-sudo --preserve-env=PYTHONPATH python3 ./fat-tree.py
+sudo --preserve-env=PYTHONPATH python3 ./fat_tree.py
+
+
+
+# ryu-manager --ofp-tcp-listen-port 6653 sp_routing.py --observe-links
+# sudo python3 fat-tree.py
