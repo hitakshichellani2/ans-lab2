@@ -52,9 +52,6 @@ class FTRouter(app_manager.RyuApp):
         self.arp_table   = {}
         self._flows_installed = False
 
-        # Mininet names switches s0, s1, ... in ft_topo.switches order.
-        # OVSKernelSwitch derives dpid from the numeric part of the name,
-        # so s0 -> dpid=0, s1 -> dpid=1, ... (0-based, NOT 1-based).
         self.dpid_to_ip = {}
         self.ip_to_dpid = {}
         for idx, sw_node in enumerate(self.topo_net.switches):
@@ -98,7 +95,7 @@ class FTRouter(app_manager.RyuApp):
         self.add_flow(datapath, 0, match, actions)
 
     # ------------------------------------------------------------------ #
-    # Flow entry helper                                                    #
+    # Flow installer                                                    #
     # ------------------------------------------------------------------ #
     def add_flow(self, datapath, priority, match, actions):
         ofproto = datapath.ofproto
@@ -113,27 +110,19 @@ class FTRouter(app_manager.RyuApp):
         return port not in self.sw_ports.get(dpid, set())
 
     def _switch_role(self, ip):
-        """
-        Returns role tuple for a switch IP:
-          ('core',        row, col)      0-based
-          ('aggregation', pod, sw_idx)   sw_idx 0-based within pod
-          ('edge',        pod, sw_idx)   sw_idx 0-based within pod
-        """
+        
         a, b, c, d = (int(x) for x in ip.split('.'))
         k    = self.k
         half = k // 2
         if b == k:
-            # Core: IP = 10.k.(j+1).i  → row=j (0-based), col=i-1 (0-based)
             return ('core', c - 1, d - 1)
         elif c >= half:
-            # Aggregation: sw index within pod is c-half (0-based)
             return ('aggregation', b, c - half)
         else:
-            # Edge: sw index within pod is c (0-based)
             return ('edge', b, c)
 
     # ------------------------------------------------------------------ #
-    # Install two-level routing (Section 3.5 of Al-Fares et al.)          #
+    # Install two-level routing                                          #
     # ------------------------------------------------------------------ #
     def _install_ft_routing(self):
         if self._flows_installed:
@@ -154,8 +143,6 @@ class FTRouter(app_manager.RyuApp):
 
             # ---------------------------------------------------------- #
             # CORE switches                                               #
-            # core[row][col] connects to aggr_switches[pod][col].        #
-            # One /16 entry per pod pointing to that aggr switch.        #
             # ---------------------------------------------------------- #
             if role[0] == 'core':
                 row, col = role[1], role[2]
@@ -175,16 +162,11 @@ class FTRouter(app_manager.RyuApp):
 
             # ---------------------------------------------------------- #
             # AGGREGATION switches                                        #
-            # Priority 20: /24 per edge subnet in same pod (intra-pod)   #
-            # Priority 10: suffix /8 on host byte → core uplinks         #
-            #   aggr[pod][sw_idx] connects to core[row][sw_idx];         #
-            #   host byte h maps to row (h-2).                           #
             # ---------------------------------------------------------- #
             elif role[0] == 'aggregation':
                 pod    = role[1]
-                sw_idx = role[2]   # column index = position in pod
+                sw_idx = role[2]   
 
-                # Priority 20: intra-pod prefix entries
                 for esw_idx, esw in enumerate(ft.edge_switches[pod]):
                     esw_dpid = self.ip_to_dpid.get(esw.id)
                     if esw_dpid is None:
@@ -198,9 +180,8 @@ class FTRouter(app_manager.RyuApp):
                     self.add_flow(datapath, 20, match,
                                   [parser.OFPActionOutput(port)])
 
-                # Priority 10: inter-pod suffix entries toward core
                 for i in range(half):
-                    host_byte = i + 2          # host bytes are 2..half+1
+                    host_byte = i + 2          
                     csw      = ft.core[i][sw_idx]
                     csw_dpid = self.ip_to_dpid.get(csw.id)
                     if csw_dpid is None:
@@ -216,16 +197,12 @@ class FTRouter(app_manager.RyuApp):
 
             # ---------------------------------------------------------- #
             # EDGE switches                                               #
-            # Priority 10: suffix /8 entries → aggr uplinks              #
-            #   host byte h maps to aggr switch (h-2) in same pod.       #
-            # /32 host entries (priority 30) are installed dynamically   #
-            # when hosts are first seen.                                  #
             # ---------------------------------------------------------- #
             elif role[0] == 'edge':
                 pod = role[1]
 
                 for i, asw in enumerate(ft.aggr_switches[pod]):
-                    host_byte = i + 2          # host bytes are 2..half+1
+                    host_byte = i + 2          
                     asw_dpid  = self.ip_to_dpid.get(asw.id)
                     if asw_dpid is None:
                         continue
@@ -242,7 +219,7 @@ class FTRouter(app_manager.RyuApp):
         self.logger.info("Two-level FT routing installed.")
 
     # ------------------------------------------------------------------ #
-    # /32 host entry on edge switch (priority 30 > suffix/prefix)        #
+    # /32 host entry on edge switch                                       #
     # ------------------------------------------------------------------ #
     def _install_host_entry(self, datapath, host_ip, port):
         parser  = datapath.ofproto_parser
@@ -350,9 +327,7 @@ class FTRouter(app_manager.RyuApp):
                 self.host_port[dpid][src_ip] = in_port
                 self.arp_table[src_ip] = eth_pkt.src
                 self._install_host_entry(datapath, src_ip, in_port)
-
-        # Forward this first packet using the two-level routing logic
-        # so it isn't dropped while flow rules propagate.
+        
         k    = self.k
         half = k // 2
         ft   = self.topo_net
@@ -374,10 +349,8 @@ class FTRouter(app_manager.RyuApp):
             pod      = role[1]
             sw_idx   = role[2]
             if pod == dst_pod and sw_idx == dst_edge_idx:
-                # Local delivery — use /32 host entry port
                 out_port = self.host_port.get(dpid, {}).get(dst_ip)
             else:
-                # Suffix: host_byte → aggr index
                 aggr_idx = (dst_host_byte - 2) % half
                 asw      = ft.aggr_switches[pod][aggr_idx]
                 asw_dpid = self.ip_to_dpid.get(asw.id)
@@ -387,12 +360,10 @@ class FTRouter(app_manager.RyuApp):
             pod    = role[1]
             sw_idx = role[2]
             if pod == dst_pod:
-                # Prefix: go to correct edge switch
                 esw      = ft.edge_switches[dst_pod][dst_edge_idx]
                 esw_dpid = self.ip_to_dpid.get(esw.id)
                 out_port = self.sw_port_map.get((dpid, esw_dpid))
             else:
-                # Suffix: host_byte → core row
                 row      = (dst_host_byte - 2) % half
                 csw      = ft.core[row][sw_idx]
                 csw_dpid = self.ip_to_dpid.get(csw.id)
