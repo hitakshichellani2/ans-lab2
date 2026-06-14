@@ -49,26 +49,13 @@ class FattreeNet(Topo):
         # Link parameters: 15 Mbps bandwidth, 5 ms latency
         link_opts = dict(bw=15, delay='5ms')
 
-        # ------------------------------------------------------------------ #
-        # 1. Add all switches                                                  #
-        #    We map each topo.Node (switch) → a Mininet switch name.          #
-        #    Names must be alphanumeric only (no '_', '.', '/').               #
-        #    Strategy: "s<index>" where index is position in ft_topo.switches #
-        # ------------------------------------------------------------------ #
-        node_to_name = {}   # topo.Node → mininet name string
-
+        node_to_name = {}   
         for idx, sw_node in enumerate(ft_topo.switches):
             # name: s0, s1, s2, …
             name = f"s{idx}"
-            # Store the fat-tree IP as a switch parameter for reference
             self.addSwitch(name, cls=OVSKernelSwitch)
             node_to_name[sw_node] = name
 
-        # ------------------------------------------------------------------ #
-        # 2. Add all servers (hosts)                                           #
-        #    IP from fat-tree paper: 10.pod.edge_sw_idx.host_idx/8            #
-        #    The Node.id field already holds the correct IP string.            #
-        # ------------------------------------------------------------------ #
         for srv_node in ft_topo.servers:
             ip_with_mask = srv_node.id + "/8"
             # Host name: replace dots with nothing → e.g. "h10012"
@@ -76,11 +63,6 @@ class FattreeNet(Topo):
             self.addHost(hname, ip=ip_with_mask)
             node_to_name[srv_node] = hname
 
-        # ------------------------------------------------------------------ #
-        # 3. Add all edges (links)                                             #
-        #    Walk every switch node; for each edge add the link once          #
-        #    (guard with a visited set to avoid duplicates).                  #
-        # ------------------------------------------------------------------ #
         added_edges = set()
 
         all_nodes = ft_topo.switches + ft_topo.servers
@@ -119,5 +101,17 @@ def run(graph_topo):
 
 
 if __name__ == '__main__':
-    ft_topo = topo.Fattree(4)
+    while True:
+        try:
+            user_input = input("Enter the value of k for the Fat-Tree topology: ").strip()
+            k = int(user_input)
+            if k <= 0:
+                print("Please enter a positive integer.")
+                continue
+            break
+        except ValueError:
+            print("Invalid input. Please enter a valid integer.")
+
+    print(f"Generating Fat-Tree network with k = {k}...")
+    ft_topo = topo.Fattree(k)
     run(ft_topo)
