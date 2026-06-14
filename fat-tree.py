@@ -74,7 +74,18 @@ def run(graph_topo):
     net.stop()
     mininet.clean.cleanup()
 
-
 if __name__ == '__main__':
-    ft_topo = topo.Fattree(4)
-    run(ft_topo)
+    while True:
+        try:
+            user_input = input("Enter the value of k for the Fat-Tree topology: ").strip()
+            k = int(user_input)
+            if k <= 0:
+                print("Please enter a positive integer.")
+                continue
+            break
+        except ValueError:
+            print("Invalid input. Please enter a valid integer.")
+
+    print(f"Generating Fat-Tree network with k = {k}...")
+    ft_topo = topo.Fattree(k)
+    run(ft_topo)    
