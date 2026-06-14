@@ -19,122 +19,85 @@
  CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  """
 
-# Class for an edge in the graph
 class Edge:
 	def __init__(self):
 		self.lnode = None
-		self.rnode = None
-	
-	def remove(self):
+  self.rnode = None
+ def remove(self):
 		self.lnode.edges.remove(self)
-		self.rnode.edges.remove(self)
-		self.lnode = None
-		self.rnode = None
-
-# Class for a node in the graph
+  self.rnode.edges.remove(self)
+  self.lnode = None
+  self.rnode = None
 class Node:
 	def __init__(self, id, type):
 		self.edges = []
-		self.id = id
-		self.type = type
-		self.pod = None
-		self.index = None
-		self.ip = None
-
-	def __repr__(self):
+  self.id = id
+  self.type = type
+  self.pod = None
+  self.index = None
+  self.ip = None
+ def __repr__(self):
 		return f"Node({self.id}, type={self.type}, pod={self.pod}, idx={self.index})"
-
-	# Add an edge connected to another node
-	def add_edge(self, node):
+ def add_edge(self, node):
 		edge = Edge()
-		edge.lnode = self
-		edge.rnode = node
-		self.edges.append(edge)
-		node.edges.append(edge)
-		return edge
-
-	# Remove an edge from the node
-	def remove_edge(self, edge):
+  edge.lnode = self
+  edge.rnode = node
+  self.edges.append(edge)
+  node.edges.append(edge)
+  return edge
+ def remove_edge(self, edge):
 		self.edges.remove(edge)
-
-	# Decide if another node is a neighbor
-	def is_neighbor(self, node):
+ def is_neighbor(self, node):
 		for edge in self.edges:
 			if edge.lnode == node or edge.rnode == node:
 				return True
-		return False
-
-
+  return False
 class Fattree:
-
 	def __init__(self, num_ports):
 		self.servers = []
-		self.switches = []
-		self.generate(num_ports)
-
-	def generate(self, num_ports):
-		"""
-		* core  : (k/2)² switches
-		* pods  : k
-			k/2 edge + k/2 aggregation per pod
-			k/2 hosts per edge switch
-		"""
-		k = num_ports
-		self.edges = []
-
-		def _link(n1, n2):
+  self.switches = []
+  self.generate(num_ports)
+ def generate(self, num_ports):
+  k = num_ports
+  self.edges = []
+  def _link(n1, n2):
 			e = n1.add_edge(n2)
-			self.edges.append(e)
-
-		self.switches, self.servers = [], []
-		switch_id, host_id = 1, 1
-
-		# core
-		groups = rows = k // 2
-		core = [[None] * groups for _ in range(rows)]
-		for r in range(rows):
+   self.edges.append(e)
+  self.switches, self.servers = [], []
+  switch_id, host_id = 1, 1
+  groups = rows = k // 2
+  core = [[None] * groups for _ in range(rows)]
+  for r in range(rows):
 			for g in range(groups):
 				n = Node(f's{switch_id}', 'core')
-				switch_id += 1
-				self.switches.append(n)
-				core[r][g] = n
-
-		# pods
-		for p in range(k):
+    switch_id += 1
+    self.switches.append(n)
+    core[r][g] = n
+  for p in range(k):
 			edges, aggs = [], []
-
-			# edge switches
-			for e in range(k // 2):
+   for e in range(k // 2):
 				n = Node(f's{switch_id}', 'edge')
-				n.pod, n.index = p, e
-				switch_id += 1
-				self.switches.append(n)
-				edges.append(n)
-
-			# aggregation switches
-			for a in range(k // 2):
+    n.pod, n.index = p, e
+    switch_id += 1
+    self.switches.append(n)
+    edges.append(n)
+   for a in range(k // 2):
 				n = Node(f's{switch_id}', 'agg')
-				n.pod, n.index = p, a
-				switch_id += 1
-				self.switches.append(n)
-				aggs.append(n)
-
-			# edge-agg links
-			for e in edges:
+    n.pod, n.index = p, a
+    switch_id += 1
+    self.switches.append(n)
+    aggs.append(n)
+   for e in edges:
 				for a in aggs:
 					_link(e, a)
-
-			# hosts on every edge switch
-			for e in edges:
+   for e in edges:
 				for h in range(k // 2):
 					host = Node(f'h{host_id}', 'server')
-					host.ip = f"10.{p}.{e.index}.{h+1}"
-					host_id += 1
-					self.servers.append(host)
-					_link(host, e)
-
-			# agg-core links: each agg row connects to every core group
-			for a in aggs:
+     host.ip = f"10.{p}.{e.index}.{h+1}"
+     host_id += 1
+     self.servers.append(host)
+     _link(host, e)
+   for a in aggs:
 				row = a.index
-				for g in range(groups):
+    for g in range(groups):
 					_link(a, core[row][g])
